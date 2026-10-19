@@ -1,18 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
 import { Lock, Home, UserPlus, ShieldCheck, Copy, Eye, EyeOff, ArrowLeft, Fingerprint, KeyRound, LifeBuoy, Check } from 'lucide-react'
 import {
   crearHogar, desbloquear, estaConfigurado, unirseConInvitacion, leerInvitacion, generarClaveInicial,
-  normalizarClaveInicial, recuperarConClaveInicial, sesionDesdeRaw, borrarTodoLocal,
+  normalizarClaveInicial, recuperarConClaveInicial, sesionDesdeRaw, borrarTodoLocal, abrirClaveHogarRaw,
 } from '../cripto/sesion'
-import { biometriaActiva, desbloquearConBiometria } from '../cripto/biometria'
+import { activarBiometria, biometriaActiva, biometriaDisponible, desbloquearConBiometria } from '../cripto/biometria'
+import type { Sesion } from '../cripto/sesion'
 import { registrarDispositivo } from '../sync/relay'
 import { useSesion } from '../hooks/useSesion'
 import { useToast, vibrar } from '../hooks/useAvisos'
 import { guardar, fijarUsuario, asegurarPeriodo } from '../db/operaciones'
 import { leerConfig } from '../db'
 
-type Paso = 'cargando' | 'bienvenida' | 'invitacion' | 'claveInicial' | 'confirmar' | 'perfil' | 'bloqueo' | 'recuperar'
+type Paso = 'cargando' | 'bienvenida' | 'invitacion' | 'claveInicial' | 'confirmar' | 'perfil' | 'bloqueo' | 'recuperar' | 'ofrecerBio'
 const PASOS_ALTA: Paso[] = ['claveInicial', 'confirmar', 'perfil']
 
 function fuerza(c: string) {
@@ -68,6 +69,8 @@ export default function Acceso() {
   const [confirmacion, setConfirmacion] = useState('')
   const [guardada, setGuardada] = useState(false)
   const [conBio, setConBio] = useState(false)
+  const [pendiente, setPendiente] = useState<{ s: Sesion; clave: string; alias: string }>()
+  const autoBio = useRef(false)
   const [error, setError] = useState('')
   const [ocupado, setOcupado] = useState(false)
 
@@ -89,6 +92,34 @@ export default function Acceso() {
   }, [])
 
   const ir = (p: Paso) => { setError(''); setPaso(p) }
+
+  /** Tras entrar con la clave, propone activar Face ID / huella si el móvil lo permite y aún no está activo. */
+  async function entrarOfreciendoBio(s: Sesion, clavePlano: string, nombre: string) {
+    let noPreguntar = false
+    try { noPreguntar = localStorage.getItem('bio-no-preguntar') === '1' } catch { /* sin storage */ }
+    if (!noPreguntar && (await biometriaDisponible()) && !(await biometriaActiva())) {
+      setPendiente({ s, clave: clavePlano, alias: nombre || 'PisoCompartido' })
+      setClave(''); setClave2('')
+      return ir('ofrecerBio')
+    }
+    entrar(s)
+  }
+
+  async function activarYEntrar() {
+    if (!pendiente) return
+    setOcupado(true)
+    try {
+      await activarBiometria(await abrirClaveHogarRaw(pendiente.clave), pendiente.alias)
+      toast({ tipo: 'ok', texto: 'Listo: la próxima vez entra con tu cara o huella' })
+    } catch (err) {
+      toast({ tipo: 'error', texto: (err as Error).message === 'Cancelado' ? 'Activación cancelada' : `${(err as Error).message}. Usa el autorrelleno de contraseñas del móvil.` })
+    } finally {
+      setOcupado(false)
+      const s = pendiente.s
+      setPendiente(undefined)
+      entrar(s)
+    }
+  }
   const fallo = (msg: string) => { setError(msg); vibrar([20, 40, 20]) }
 
   function empezarAlta(m: 'crear' | 'unirse') {
@@ -113,7 +144,7 @@ export default function Acceso() {
       if (s.rol === 'A') await asegurarPeriodo()
       history.replaceState(null, '', location.pathname)
       vibrar([15, 50, 15])
-      entrar(s)
+      await entrarOfreciendoBio(s, clave, alias.trim())
     } catch (err) {
       fallo((err as Error).message)
     } finally {
@@ -125,13 +156,30 @@ export default function Acceso() {
     e.preventDefault()
     if (!clave) return
     setOcupado(true)
-    try { entrar(await desbloquear(clave)) } catch (err) { fallo((err as Error).message); setClave('') } finally { setOcupado(false) }
+    try { await entrarOfreciendoBio(await desbloquear(clave), clave, aliasGuardado) } catch (err) { fallo((err as Error).message); setClave('') } finally { setOcupado(false) }
   }
 
-  async function abrirBio() {
+  async function abrirBio(automatico = false) {
     setError('')
-    try { entrar(await sesionDesdeRaw(await desbloquearConBiometria())) } catch (err) { fallo((err as Error).message) }
+    try { entrar(await sesionDesdeRaw(await desbloquearConBiometria())) } catch (err) {
+      // al lanzarse sola, una cancelación o un bloqueo del navegador no es un error para el usuario
+      if (!automatico) fallo((err as Error).message)
+    }
   }
+
+  // Lanza Face ID / huella sola al abrir o al volver a la app (se bloquea al pasar a segundo plano)
+  useEffect(() => {
+    if (paso !== 'bloqueo' || !conBio) return
+    const intentar = () => {
+      if (document.hidden || autoBio.current) return
+      autoBio.current = true
+      abrirBio(true)
+    }
+    intentar()
+    document.addEventListener('visibilitychange', intentar)
+    return () => document.removeEventListener('visibilitychange', intentar)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paso, conBio])
 
   async function recuperar(e: React.FormEvent) {
     e.preventDefault()
@@ -141,7 +189,7 @@ export default function Acceso() {
     try {
       const s = await recuperarConClaveInicial(confirmacion, clave)
       toast({ tipo: 'ok', texto: 'Clave cambiada. ¡Bienvenido de nuevo!' })
-      entrar(s)
+      await entrarOfreciendoBio(s, clave, aliasGuardado)
     } catch (err) { fallo((err as Error).message) } finally { setOcupado(false) }
   }
 
@@ -240,14 +288,14 @@ export default function Acceso() {
           {paso === 'bloqueo' && (
             <div className="grid gap-3">
               {conBio && (
-                <button className="tarjeta flex items-center justify-center gap-3 font-bold text-marca transition-transform active:scale-[.98]" onClick={abrirBio}>
+                <button className="tarjeta flex items-center justify-center gap-3 font-bold text-marca transition-transform active:scale-[.98]" onClick={() => abrirBio()}>
                   <Fingerprint size={26} /> Entrar con Face ID / huella
                 </button>
               )}
               <form onSubmit={abrir} className="tarjeta grid gap-3">
                 <h2 className="flex items-center gap-2 text-lg font-bold"><Lock size={20} /> Introduce tu clave</h2>
                 {/* usuario oculto para que el llavero/gestor asocie y recuerde la contraseña */}
-                <input type="text" name="username" autoComplete="username" value={aliasGuardado || 'PisoCompartido'} readOnly hidden />
+                <input type="text" name="username" autoComplete="username" value={aliasGuardado || 'PisoCompartido'} readOnly tabIndex={-1} aria-hidden="true" className="sr-only" />
                 <CampoClave valor={clave} cambiar={setClave} placeholder="Clave personal" autoFocus={!conBio} />
                 {error && <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</p>}
                 <button className="boton min-h-13 bg-marca text-white disabled:opacity-60" disabled={ocupado}>{ocupado ? 'Comprobando…' : 'Desbloquear'}</button>
@@ -258,13 +306,30 @@ export default function Acceso() {
             </div>
           )}
 
+          {paso === 'ofrecerBio' && (
+            <div className="tarjeta grid gap-3 text-center">
+              <motion.span initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ type: 'spring', duration: 0.4, bounce: 0.3 }}
+                className="mx-auto grid size-20 place-items-center rounded-3xl bg-marca-suave text-marca"><Fingerprint size={44} /></motion.span>
+              <h2 className="text-xl font-extrabold">¿Entrar con Face ID o huella?</h2>
+              <p className="text-sm text-tinta/60">Así no tendrás que escribir la clave cada vez. Tu cara o huella nunca salen del móvil.</p>
+              <button className="boton min-h-13 bg-marca text-white disabled:opacity-60" disabled={ocupado} onClick={activarYEntrar}>
+                <Fingerprint size={20} /> {ocupado ? 'Esperando al móvil…' : 'Activar ahora'}
+              </button>
+              <button className="boton bg-superficie ring-1 ring-tinta/10" onClick={() => { const s = pendiente!.s; setPendiente(undefined); entrar(s) }}>Ahora no</button>
+              <button className="text-xs text-tinta/45" onClick={() => {
+                try { localStorage.setItem('bio-no-preguntar', '1') } catch { /* sin storage */ }
+                const s = pendiente!.s; setPendiente(undefined); entrar(s)
+              }}>No volver a preguntar</button>
+            </div>
+          )}
+
           {paso === 'recuperar' && (
             <form onSubmit={recuperar} className="tarjeta grid gap-3">
               <h2 className="flex items-center gap-2 text-lg font-bold"><LifeBuoy size={20} /> Recuperar acceso</h2>
               <p className="text-sm text-tinta/60">Introduce la <b>clave inicial</b> que apuntaste al crear tu usuario y elige una clave nueva.</p>
               <input className="campo text-center font-mono text-lg tracking-wider uppercase" placeholder="XXXX-XXXX-XXXX-XXXX" value={confirmacion}
                 onChange={(e) => setConfirmacion(e.target.value)} autoCapitalize="characters" autoComplete="off" spellCheck={false} autoFocus />
-              <input type="text" name="username" autoComplete="username" value={aliasGuardado || 'PisoCompartido'} readOnly hidden />
+              <input type="text" name="username" autoComplete="username" value={aliasGuardado || 'PisoCompartido'} readOnly tabIndex={-1} aria-hidden="true" className="sr-only" />
               <CampoClave valor={clave} cambiar={setClave} placeholder="Nueva clave (mín. 8)" nueva medidor />
               <CampoClave valor={clave2} cambiar={setClave2} placeholder="Repite la nueva clave" nueva />
               {error && <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</p>}
