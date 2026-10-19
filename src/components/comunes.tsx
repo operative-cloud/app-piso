@@ -45,14 +45,14 @@ export function TarjetaKPI({ icono: Icono, etiqueta, valor, color, pie }: {
 }) {
   return (
     <motion.div className="tarjeta" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}>
-      <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-black/55">
+      <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-tinta/55">
         <span className="grid size-8 place-items-center rounded-xl" style={{ background: color + '22', color }}>
           <Icono size={18} />
         </span>
         {etiqueta}
       </div>
       <div className="text-2xl font-extrabold tabular-nums">{valor}</div>
-      {pie && <div className="mt-1 text-xs text-black/50">{pie}</div>}
+      {pie && <div className="mt-1 text-xs text-tinta/50">{pie}</div>}
     </motion.div>
   )
 }
@@ -69,7 +69,7 @@ export function Hoja({ abierta, cerrar, titulo, children }: { abierta: boolean; 
             initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', duration: 0.3, bounce: 0 }}>
             <div className="mb-4 flex items-center">
               <h2 className="flex-1 text-xl font-extrabold">{titulo}</h2>
-              <button className="boton size-11 bg-white p-0" onClick={cerrar} aria-label="Cerrar"><X size={20} /></button>
+              <button className="boton size-11 bg-superficie p-0" onClick={cerrar} aria-label="Cerrar"><X size={20} /></button>
             </div>
             {children}
           </motion.div>
@@ -81,7 +81,7 @@ export function Hoja({ abierta, cerrar, titulo, children }: { abierta: boolean; 
 
 export function Vacio({ icono: Icono, texto }: { icono: LucideIcon; texto: string }) {
   return (
-    <div className="flex flex-col items-center gap-2 py-10 text-center text-black/40">
+    <div className="flex flex-col items-center gap-2 py-10 text-center text-tinta/40">
       <Icono size={44} strokeWidth={1.5} />
       <p className="text-sm">{texto}</p>
     </div>
@@ -95,7 +95,7 @@ export function Segmentos<T extends string>({ opciones, valor, cambiar }: {
     <div className="mb-4 flex rounded-2xl bg-marca-suave p-1">
       {opciones.map((o) => (
         <button key={o.valor} onClick={() => cambiar(o.valor)}
-          className={`min-h-10 flex-1 rounded-xl text-sm font-bold transition-colors ${valor === o.valor ? 'bg-white text-marca shadow' : 'text-black/50'}`}>
+          className={`min-h-10 flex-1 rounded-xl text-sm font-bold transition-colors ${valor === o.valor ? 'bg-superficie text-marca shadow' : 'text-tinta/50'}`}>
           {o.texto}
         </button>
       ))}

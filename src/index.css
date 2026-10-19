@@ -1,28 +1,45 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.oscuro, .oscuro *));
+
 @theme {
   --color-marca: #6d5efc;
-  --color-marca-suave: #ece9ff;
+  --color-marca-suave: var(--marca-suave);
   --color-a: #ff8a3d;
   --color-b: #18b98d;
-  --color-fondo: #f6f4ff;
-  --color-tinta: #1f1b3a;
+  --color-fondo: var(--fondo);
+  --color-superficie: var(--superficie);
+  --color-tinta: var(--tinta);
   --font-sans: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-:root { color-scheme: light; }
+:root {
+  --fondo: #f6f4ff; --superficie: #ffffff; --tinta: #1f1b3a; --marca-suave: #ece9ff;
+  --sombra: 0 6px 24px -12px rgba(60, 40, 160, .25);
+  color-scheme: light;
+}
+:root.oscuro {
+  --fondo: #121022; --superficie: #1d1a33; --tinta: #eeeaff; --marca-suave: #2b2650;
+  --sombra: 0 6px 24px -12px rgba(0, 0, 0, .6);
+  color-scheme: dark;
+}
+
 html, body, #root { min-height: 100dvh; }
 body {
-  background: var(--color-fondo);
-  color: var(--color-tinta);
+  background: var(--fondo);
+  color: var(--tinta);
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior-y: none;
+  -webkit-font-smoothing: antialiased;
 }
-.tarjeta { @apply rounded-3xl bg-white p-4 shadow-[0_6px_24px_-12px_rgba(60,40,160,.25)]; }
-.boton { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl px-4 font-semibold transition-transform active:scale-[.97]; }
-.campo { @apply min-h-11 w-full rounded-2xl border border-black/10 bg-white px-3 text-base outline-none focus:border-marca; }
-.pb-seguro { padding-bottom: calc(env(safe-area-inset-bottom) + 84px); }
+button { cursor: pointer; touch-action: manipulation; }
+.tarjeta { @apply rounded-3xl bg-superficie p-4; box-shadow: var(--sombra); }
+.boton { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl px-4 font-semibold transition-transform duration-100 active:scale-[.96] disabled:active:scale-100; }
+.campo { @apply min-h-12 w-full rounded-2xl border border-tinta/10 bg-superficie px-3 text-base text-tinta outline-none transition-colors placeholder:text-tinta/35 focus:border-marca; }
+.pb-seguro { padding-bottom: calc(env(safe-area-inset-bottom) + 92px); }
 .pt-seguro { padding-top: calc(env(safe-area-inset-top) + 12px); }
+.sin-barra::-webkit-scrollbar { display: none; }
+:focus-visible { outline: 2px solid var(--color-marca); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }

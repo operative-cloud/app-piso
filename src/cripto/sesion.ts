@@ -16,11 +16,30 @@ async function protegerClaveHogar(raw: Uint8Array, clavePersonal: string) {
   await escribirConfig('claveHogarCifrada', await cifrarBytes(k, raw))
 }
 
-export async function crearHogar(clavePersonal: string): Promise<Sesion> {
+const ALFABETO = 'ABCDEFGHJKMNPQRSTVWXYZ23456789' // sin 0/O, 1/I/L, U para evitar confusiones
+
+/** Clave inicial legible (≈78 bits): XXXX-XXXX-XXXX-XXXX. Sirve también para recuperar la cuenta. */
+export function generarClaveInicial() {
+  const bytes = aleatorio(16)
+  const txt = [...bytes].map((b) => ALFABETO[b % ALFABETO.length]).join('')
+  return txt.match(/.{4}/g)!.join('-')
+}
+export const normalizarClaveInicial = (c: string) => c.toUpperCase().replace(/[^A-Z0-9]/g, '')
+
+/** Guarda una segunda copia de la clave del hogar, protegida con la clave inicial (recuperación). */
+async function protegerRecuperacion(raw: Uint8Array, claveInicial: string) {
+  const salt = aleatorio(16)
+  const k = await derivarClave(normalizarClaveInicial(claveInicial), salt)
+  await escribirConfig('saltRec', aBase64(salt))
+  await escribirConfig('claveHogarRec', await cifrarBytes(k, raw))
+}
+
+export async function crearHogar(clavePersonal: string, claveInicial: string): Promise<Sesion> {
   const raw = generarClaveHogar()
   const hogarId = aBase64(aleatorio(16))
   const dispositivoId = aBase64(aleatorio(16))
   await protegerClaveHogar(raw, clavePersonal)
+  await protegerRecuperacion(raw, claveInicial)
   await escribirConfig('hogarId', hogarId)
   await escribirConfig('dispositivoId', dispositivoId)
   await escribirConfig('rol', 'A')
@@ -34,24 +53,32 @@ export async function generarInvitacion(clavePersonal: string) {
   return aBase64(new TextEncoder().encode(JSON.stringify({ h: hogarId, k: aBase64(raw), e: Date.now() + CADUCIDAD_QR })))
 }
 
-export async function unirseConInvitacion(codigo: string, clavePersonal: string): Promise<Sesion> {
+/** Comprueba la invitación sin guardar nada (para validar antes de pedir la clave). */
+export function leerInvitacion(codigo: string) {
   let datos: { h: string; k: string; e: number }
   try {
     datos = JSON.parse(new TextDecoder().decode(deBase64(codigo.trim())))
   } catch {
     throw new Error('Código de invitación no válido')
   }
+  if (!datos.h || !datos.k) throw new Error('Código de invitación no válido')
   if (Date.now() > datos.e) throw new Error('La invitación ha caducado. Pide un QR nuevo.')
+  return datos
+}
+
+export async function unirseConInvitacion(codigo: string, clavePersonal: string, claveInicial: string): Promise<Sesion> {
+  const datos = leerInvitacion(codigo)
   const raw = deBase64(datos.k)
   const dispositivoId = aBase64(aleatorio(16))
   await protegerClaveHogar(raw, clavePersonal)
+  await protegerRecuperacion(raw, claveInicial)
   await escribirConfig('hogarId', datos.h)
   await escribirConfig('dispositivoId', dispositivoId)
   await escribirConfig('rol', 'B')
   return { claveHogar: await importarClaveHogar(raw), hogarId: datos.h, dispositivoId, rol: 'B' }
 }
 
-async function abrirClaveHogarRaw(clavePersonal: string) {
+export async function abrirClaveHogarRaw(clavePersonal: string) {
   const salt = deBase64((await leerConfig('salt'))!)
   const k = await derivarClave(clavePersonal, salt)
   try {
@@ -67,18 +94,23 @@ export async function esperaPendiente() {
   return Math.max(0, hasta - Date.now())
 }
 
-export async function desbloquear(clavePersonal: string): Promise<Sesion> {
+export async function sesionDesdeRaw(raw: Uint8Array): Promise<Sesion> {
+  return {
+    claveHogar: await importarClaveHogar(raw),
+    hogarId: (await leerConfig('hogarId'))!,
+    dispositivoId: (await leerConfig('dispositivoId'))!,
+    rol: (await leerConfig('rol')) as Usuario,
+  }
+}
+
+/** Ejecuta un intento de apertura contando fallos (retardo progresivo tras 5). */
+async function conLimite<T>(fn: () => Promise<T>): Promise<T> {
   const espera = await esperaPendiente()
   if (espera > 0) throw new Error(`Demasiados intentos. Espera ${Math.ceil(espera / 1000)} s`)
   try {
-    const raw = await abrirClaveHogarRaw(clavePersonal)
+    const r = await fn()
     await escribirConfig('fallos', '0')
-    return {
-      claveHogar: await importarClaveHogar(raw),
-      hogarId: (await leerConfig('hogarId'))!,
-      dispositivoId: (await leerConfig('dispositivoId'))!,
-      rol: (await leerConfig('rol')) as Usuario,
-    }
+    return r
   } catch (e) {
     const fallos = Number((await leerConfig('fallos')) ?? 0) + 1
     await escribirConfig('fallos', String(fallos))
@@ -86,6 +118,25 @@ export async function desbloquear(clavePersonal: string): Promise<Sesion> {
     throw e
   }
 }
+
+export const desbloquear = (clavePersonal: string) =>
+  conLimite(async () => sesionDesdeRaw(await abrirClaveHogarRaw(clavePersonal)))
+
+/** «¿Olvidaste tu clave?»: con la clave inicial se abre la copia de recuperación y se fija una clave nueva. */
+export const recuperarConClaveInicial = (claveInicial: string, nuevaClave: string) =>
+  conLimite(async () => {
+    const salt = await leerConfig('saltRec')
+    if (!salt) throw new Error('Este móvil no tiene clave inicial guardada')
+    const k = await derivarClave(normalizarClaveInicial(claveInicial), deBase64(salt))
+    let raw: Uint8Array
+    try {
+      raw = await descifrarBytes(k, (await leerConfig('claveHogarRec'))!)
+    } catch {
+      throw new Error('Clave inicial incorrecta')
+    }
+    await protegerClaveHogar(raw, nuevaClave)
+    return sesionDesdeRaw(raw)
+  })
 
 export async function cambiarClave(actual: string, nueva: string) {
   const raw = await abrirClaveHogarRaw(actual)

@@ -4,12 +4,26 @@ import { useDatosPeriodo } from '../hooks/useDatos'
 import { useAlias, useSesion } from '../hooks/useSesion'
 import { calcularSaldo, gastosPorTipo, conteoParkingMes, mesActual, eur, ZONAS, turnoSemana } from '../logica/calculos'
 import { Avatar, Cabecera, ICONO_PAGO, TarjetaKPI, colorUsuario } from '../components/comunes'
-import type { TipoPago } from '../db'
+import { db, type TipoPago } from '../db'
+import { useLiveQuery } from 'dexie-react-hooks'
+import { useEffect } from 'react'
+import { motion } from 'motion/react'
+import { ChevronRight, Flame } from 'lucide-react'
+import { useAusencias } from '../hooks/useAjustes'
+import { calcularAvisos, notificarUrgentes } from '../logica/avisos'
+import { puntosLimpieza } from '../logica/calculos'
 
-export default function Inicio() {
+export default function Inicio({ ir }: { ir: (s: string) => void }) {
   const d = useDatosPeriodo()
   const alias = useAlias()
   const { sesion, estadoSync, sincronizarYa } = useSesion()
+  const ausencias = useAusencias()
+  const compra = useLiveQuery(() => db.compra.toArray(), []) ?? []
+  const recurrentes = useLiveQuery(() => db.recurrentes.toArray(), []) ?? []
+  const avisos = d && sesion ? calcularAvisos({ yo: sesion.rol, alias, pagos: d.pagos, limpiezas: d.limpiezas, parking: d.parking, compra, recurrentes, ausencias }) : []
+  const claveAvisos = avisos.map((a) => a.id).join()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { notificarUrgentes(avisos) }, [claveAvisos])
   if (!d) return null
   const yo = sesion!.rol
   const otro = yo === 'A' ? 'B' : 'A'
@@ -21,20 +35,21 @@ export default function Inicio() {
   const tipos = gastosPorTipo(pagosMes)
   const park = conteoParkingMes(d.parking, mes)
   const hoy = new Date()
-  const misZonas = ZONAS.filter((_, i) => turnoSemana(hoy, i) === yo)
+  const misZonas = ZONAS.filter((_, i) => turnoSemana(hoy, i, ausencias) === yo)
+  const racha = puntosLimpieza(d.limpiezas, yo)
   const diasRestantes = d.periodo ? Math.ceil((new Date(d.periodo.fin).getTime() - hoy.getTime()) / 864e5) : 0
 
   // Gasto por mes (últimos 6)
   const meses = [...Array(6)].map((_, i) => {
-    const f = new Date(hoy.getFullYear(), hoy.getMonth() - 5 + i, 1)
-    const m = f.toISOString().slice(0, 7)
+    const f = new Date(hoy.getFullYear(), hoy.getMonth() - 5 + i, 15)
+    const m = mesActual(f)
     return { mes: f.toLocaleDateString('es-ES', { month: 'short' }), total: d.pagos.filter((p) => p.fecha.startsWith(m)).reduce((s, p) => s + p.importe, 0) }
   })
 
   return (
     <div>
       <Cabecera titulo={`Hola, ${alias[yo]}`} icono={LayoutDashboard}
-        extra={<button onClick={sincronizarYa} aria-label="Sincronizar" className="boton size-11 bg-white p-0">
+        extra={<button onClick={sincronizarYa} aria-label="Sincronizar" className="boton size-11 bg-superficie p-0">
           <RefreshCw size={18} className={estadoSync === 'sincronizando' ? 'animate-spin' : ''} />
         </button>} />
 
@@ -53,6 +68,23 @@ export default function Inicio() {
         </div>
       </section>
 
+      {!d.periodo && (
+        <div className="tarjeta mb-3 text-center text-sm text-tinta/60">⏳ Esperando los datos del piso desde el móvil de tu compi…</div>
+      )}
+
+      {avisos.length > 0 && (
+        <section className="mb-3 grid gap-2" aria-label="Avisos">
+          {avisos.map((a, i) => (
+            <motion.button key={a.id} onClick={() => ir(a.destino)} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04, duration: 0.2 }}
+              className={`tarjeta flex items-center gap-3 !py-3 text-left text-sm transition-transform active:scale-[.98] ${a.urgente ? 'ring-2 ring-a/60' : ''}`}>
+              <span className="text-xl">{a.emoji}</span>
+              <span className="flex-1 font-semibold">{a.texto}</span>
+              <ChevronRight size={18} className="text-tinta/30" />
+            </motion.button>
+          ))}
+        </section>
+      )}
+
       <div className="mb-3 grid grid-cols-2 gap-3">
         <TarjetaKPI icono={Wallet} etiqueta="Gasto del mes" valor={eur(totalMes)} color="#6d5efc" pie={`${pagosMes.length} pagos`} />
         <TarjetaKPI icono={CalendarClock} etiqueta="Periodo" valor={`${Math.max(diasRestantes, 0)} d`} color="#2f9bff" pie="hasta renovar" />
@@ -61,7 +93,7 @@ export default function Inicio() {
       {/* Donut de gastos */}
       <section className="tarjeta mb-3">
         <h2 className="mb-2 font-bold">¿En qué se va el dinero?</h2>
-        {tipos.length === 0 ? <p className="py-6 text-center text-sm text-black/40">Sin gastos este mes</p> : (
+        {tipos.length === 0 ? <p className="py-6 text-center text-sm text-tinta/40">Sin gastos este mes</p> : (
           <div className="flex items-center gap-3">
             <div className="relative size-36 shrink-0">
               <ResponsiveContainer>
@@ -90,26 +122,28 @@ export default function Inicio() {
 
       {/* Parking y limpieza */}
       <div className="mb-3 grid grid-cols-2 gap-3">
-        <section className="tarjeta">
+        <section className="tarjeta" onClick={() => ir('parking')}>
           <h2 className="mb-3 flex items-center gap-2 text-sm font-bold"><Car size={18} className="text-marca" /> Parking este mes</h2>
           {(['A', 'B'] as const).map((u) => {
             const max = Math.max(park.A, park.B, 1)
             return (
               <div key={u} className="mb-2">
                 <div className="flex justify-between text-xs"><span>{alias[u]}</span><b>{park[u]}</b></div>
-                <div className="h-2.5 rounded-full bg-black/5">
+                <div className="h-2.5 rounded-full bg-tinta/5">
                   <div className="h-full rounded-full transition-[width] duration-300" style={{ width: `${(park[u] / max) * 100}%`, background: colorUsuario(u) }} />
                 </div>
               </div>
             )
           })}
         </section>
-        <section className="tarjeta">
+        <button className="tarjeta text-left transition-transform active:scale-[.98]" onClick={() => ir('casa')}>
           <h2 className="mb-2 flex items-center gap-2 text-sm font-bold"><Sparkles size={18} className="text-b" /> Te toca</h2>
           <ul className="grid gap-1 text-sm">
-            {misZonas.map((z) => <li key={z} className="rounded-xl bg-b/10 px-2 py-1 font-semibold text-b">{z}</li>)}
+            {misZonas.length ? misZonas.map((z) => <li key={z} className="rounded-xl bg-b/10 px-2 py-1 font-semibold text-b">{z}</li>)
+              : <li className="text-tinta/50">Nada esta semana 🏖️</li>}
           </ul>
-        </section>
+          <div className="mt-2 flex items-center gap-1 text-xs text-tinta/55"><Flame size={14} className={racha.racha ? 'text-a' : ''} /> {racha.puntos} pts · racha {racha.racha}</div>
+        </button>
       </div>
 
       <section className="tarjeta">
@@ -117,7 +151,7 @@ export default function Inicio() {
         <div className="h-36">
           <ResponsiveContainer>
             <BarChart data={meses}>
-              <XAxis dataKey="mes" axisLine={false} tickLine={false} fontSize={12} />
+              <XAxis dataKey="mes" axisLine={false} tickLine={false} fontSize={12} stroke="currentColor" />
               <Tooltip formatter={(v) => eur(Number(v))} cursor={{ fill: '#6d5efc11' }} />
               <Bar dataKey="total" fill="#6d5efc" radius={[8, 8, 8, 8]} />
             </BarChart>

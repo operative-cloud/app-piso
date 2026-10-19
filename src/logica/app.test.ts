@@ -3,7 +3,7 @@ import { cifrarJSON, descifrarJSON, derivarClave, aleatorio, importarClaveHogar,
 import { calcularSaldo, conteoParkingMes, turnoSemana } from './calculos'
 import { db, type Pago, type Aparcamiento } from '../db'
 import { guardar, aplicarRemoto, asegurarPeriodo, renovarPeriodo, periodoActivo } from '../db/operaciones'
-import { crearHogar, desbloquear, generarInvitacion, unirseConInvitacion } from '../cripto/sesion'
+import { crearHogar, desbloquear, generarInvitacion, unirseConInvitacion, recuperarConClaveInicial, generarClaveInicial } from '../cripto/sesion'
 
 const pago = (p: Partial<Pago>): Pago => ({
   id: crypto.randomUUID(), actualizado: 0, periodoId: 'x', tipo: 'luz', concepto: '', importe: 100,
@@ -66,16 +66,26 @@ describe('base de datos', () => {
     expect((await db.tareas.get(id))?.titulo).toBe('nuevo')
   })
   it('emparejamiento y desbloqueo con clave personal', async () => {
-    const a = await crearHogar('claveA123')
+    const a = await crearHogar('claveA123', 'ABCD-EFGH-JKMN-PQRS')
     const inv = await generarInvitacion('claveA123')
     await expect(desbloquear('mala-clave')).rejects.toThrow('Clave incorrecta')
     const s = await desbloquear('claveA123')
     expect(s.hogarId).toBe(a.hogarId)
     // B se une en "otro dispositivo" (simulado reseteando la BD)
     await db.delete(); await db.open()
-    const b = await unirseConInvitacion(inv, 'claveB999')
+    const b = await unirseConInvitacion(inv, 'claveB999', 'WXYZ-2345-6789-ABCD')
     expect(b.rol).toBe('B')
     expect(b.hogarId).toBe(a.hogarId)
     await expect(desbloquear('claveA123')).rejects.toThrow()
+  })
+  it('recupera el acceso con la clave inicial', async () => {
+    await crearHogar('vieja-clave', 'ABCD-EFGH-JKMN-PQRS')
+    await expect(recuperarConClaveInicial('ZZZZ-ZZZZ-ZZZZ-ZZZZ', 'nueva-clave')).rejects.toThrow('Clave inicial incorrecta')
+    await recuperarConClaveInicial('abcd efgh jkmn pqrs', 'nueva-clave') // tolera minúsculas y espacios
+    await expect(desbloquear('vieja-clave')).rejects.toThrow()
+    expect((await desbloquear('nueva-clave')).rol).toBe('A')
+  })
+  it('genera claves iniciales legibles', () => {
+    expect(generarClaveInicial()).toMatch(/^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/)
   })
 }, 60_000)

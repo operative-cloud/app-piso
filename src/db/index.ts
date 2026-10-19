@@ -14,10 +14,17 @@ export interface Pago extends Base {
   periodoId: string; tipo: TipoPago; concepto: string; importe: number; fecha: string
   pagadoPor: Usuario; partePagador: number // % que asume quien paga (50 = mitad)
   saldado: boolean
+  foto?: string // ticket comprimido (dataURL), viaja cifrado
+  recurrenteId?: string
 }
+export interface Recurrente extends Base {
+  tipo: TipoPago; concepto: string; importe: number; dia: number; pagadoPor: Usuario; partePagador: number; activo: boolean
+}
+export interface ArticuloCompra extends Base { nombre: string; comprado: boolean; categoria: string; añadidoPor: Usuario }
+export interface Lectura extends Base { tipo: 'luz' | 'agua' | 'gas'; fecha: string; valor: number }
 export interface Limpieza extends Base { periodoId: string; zona: string; fecha: string; asignadoA: Usuario; hecho: boolean }
 export interface Tarea extends Base { periodoId: string; titulo: string; estado: 'pendiente' | 'hecho'; asignadoA: Usuario | 'ambos' }
-export interface Aparcamiento extends Base { periodoId: string; fecha: string; usuario: Usuario }
+export interface Aparcamiento extends Base { periodoId: string; fecha: string; usuario: Usuario; reserva?: boolean; nota?: string }
 export interface Ajuste extends Base { valor: string }
 
 export interface Historial {
@@ -26,7 +33,7 @@ export interface Historial {
 export interface EventoCola { id?: number; creado: number; tabla: TablaSync; registro: Base; historial: Historial }
 export interface Config { clave: string; valor: string }
 
-export const TABLAS_SYNC = ['periodos', 'pagos', 'limpiezas', 'tareas', 'parking', 'ajustes'] as const
+export const TABLAS_SYNC = ['periodos', 'pagos', 'limpiezas', 'tareas', 'parking', 'ajustes', 'recurrentes', 'compra', 'lecturas'] as const
 export type TablaSync = (typeof TABLAS_SYNC)[number]
 
 export class BaseDatos extends Dexie {
@@ -36,6 +43,9 @@ export class BaseDatos extends Dexie {
   tareas!: EntityTable<Tarea, 'id'>
   parking!: EntityTable<Aparcamiento, 'id'>
   ajustes!: EntityTable<Ajuste, 'id'>
+  recurrentes!: EntityTable<Recurrente, 'id'>
+  compra!: EntityTable<ArticuloCompra, 'id'>
+  lecturas!: EntityTable<Lectura, 'id'>
   historial!: EntityTable<Historial, 'id'>
   colaSync!: EntityTable<EventoCola, 'id'>
   config!: EntityTable<Config, 'clave'>
@@ -52,6 +62,11 @@ export class BaseDatos extends Dexie {
       historial: '++id, fecha, entidad',
       colaSync: '++id, creado',
       config: 'clave',
+    })
+    this.version(2).stores({
+      recurrentes: 'id',
+      compra: 'id, comprado',
+      lecturas: 'id, tipo, fecha',
     })
   }
 }

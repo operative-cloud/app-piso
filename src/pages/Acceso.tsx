@@ -1,61 +1,152 @@
 import { useEffect, useState } from 'react'
-import { motion } from 'motion/react'
-import { Lock, KeyRound, Home, UserPlus, ShieldCheck } from 'lucide-react'
-import { crearHogar, desbloquear, estaConfigurado, unirseConInvitacion } from '../cripto/sesion'
+import { motion, AnimatePresence } from 'motion/react'
+import { Lock, Home, UserPlus, ShieldCheck, Copy, Eye, EyeOff, ArrowLeft, Fingerprint, KeyRound, LifeBuoy, Check } from 'lucide-react'
+import {
+  crearHogar, desbloquear, estaConfigurado, unirseConInvitacion, leerInvitacion, generarClaveInicial,
+  normalizarClaveInicial, recuperarConClaveInicial, sesionDesdeRaw, borrarTodoLocal,
+} from '../cripto/sesion'
+import { biometriaActiva, desbloquearConBiometria } from '../cripto/biometria'
 import { registrarDispositivo } from '../sync/relay'
 import { useSesion } from '../hooks/useSesion'
+import { useToast, vibrar } from '../hooks/useAvisos'
 import { guardar, fijarUsuario, asegurarPeriodo } from '../db/operaciones'
+import { leerConfig } from '../db'
 
-type Paso = 'cargando' | 'bienvenida' | 'crear' | 'unirse' | 'bloqueo'
+type Paso = 'cargando' | 'bienvenida' | 'invitacion' | 'claveInicial' | 'confirmar' | 'perfil' | 'bloqueo' | 'recuperar'
+const PASOS_ALTA: Paso[] = ['claveInicial', 'confirmar', 'perfil']
+
+function fuerza(c: string) {
+  let p = 0
+  if (c.length >= 8) p++
+  if (c.length >= 12) p++
+  if (/[a-z]/.test(c) && /[A-Z]/.test(c)) p++
+  if (/\d/.test(c)) p++
+  if (/[^A-Za-z0-9]/.test(c)) p++
+  return Math.min(p, 4)
+}
+const NIVELES = [
+  { txt: 'Muy débil', color: '#ef4444' }, { txt: 'Débil', color: '#f97316' }, { txt: 'Aceptable', color: '#eab308' },
+  { txt: 'Buena', color: '#22c55e' }, { txt: 'Muy buena', color: '#18b98d' },
+]
+
+function CampoClave({ valor, cambiar, placeholder, nueva, autoFocus, medidor }: {
+  valor: string; cambiar: (v: string) => void; placeholder: string; nueva?: boolean; autoFocus?: boolean; medidor?: boolean
+}) {
+  const [ver, setVer] = useState(false)
+  const f = fuerza(valor)
+  return (
+    <div>
+      <div className="relative">
+        <input className="campo pr-12" type={ver ? 'text' : 'password'} autoComplete={nueva ? 'new-password' : 'current-password'}
+          placeholder={placeholder} value={valor} onChange={(e) => cambiar(e.target.value)} autoFocus={autoFocus} />
+        <button type="button" onClick={() => setVer(!ver)} aria-label={ver ? 'Ocultar clave' : 'Mostrar clave'}
+          className="absolute top-0 right-0 grid size-12 place-items-center text-tinta/40">{ver ? <EyeOff size={20} /> : <Eye size={20} />}</button>
+      </div>
+      {medidor && valor && (
+        <div className="mt-1.5 flex items-center gap-2">
+          <div className="flex flex-1 gap-1">
+            {[0, 1, 2, 3].map((i) => <span key={i} className="h-1.5 flex-1 rounded-full transition-colors" style={{ background: i < f ? NIVELES[f].color : 'color-mix(in srgb, var(--tinta) 10%, transparent)' }} />)}
+          </div>
+          <span className="text-xs font-semibold" style={{ color: NIVELES[f].color }}>{NIVELES[f].txt}</span>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function Acceso() {
   const { entrar } = useSesion()
+  const toast = useToast()
   const [paso, setPaso] = useState<Paso>('cargando')
+  const [modo, setModo] = useState<'crear' | 'unirse'>('crear')
   const [clave, setClave] = useState('')
   const [clave2, setClave2] = useState('')
   const [alias, setAlias] = useState('')
+  const [aliasGuardado, setAliasGuardado] = useState('')
   const [codigo, setCodigo] = useState(() => new URLSearchParams(location.hash.slice(1)).get('emparejar') ?? '')
+  const [claveInicial, setClaveInicial] = useState('')
+  const [confirmacion, setConfirmacion] = useState('')
+  const [guardada, setGuardada] = useState(false)
+  const [conBio, setConBio] = useState(false)
   const [error, setError] = useState('')
   const [ocupado, setOcupado] = useState(false)
 
   useEffect(() => {
-    estaConfigurado().then((ok) => setPaso(ok ? 'bloqueo' : codigo ? 'unirse' : 'bienvenida'))
-  }, [codigo])
+    (async () => {
+      if (await estaConfigurado()) {
+        setConBio(await biometriaActiva())
+        const yo = await leerConfig('rol')
+        const fila = yo ? await import('../db').then(({ db }) => db.ajustes.get(`alias-${yo}`)) : undefined
+        setAliasGuardado(fila?.valor ?? '')
+        setPaso('bloqueo')
+      } else if (codigo) {
+        setModo('unirse')
+        setPaso('invitacion')
+      } else setPaso('bienvenida')
+    })()
+    // solo al montar
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  const validar = () => {
-    if (clave.length < 6) return 'La clave debe tener al menos 6 caracteres'
-    if (paso !== 'bloqueo' && clave !== clave2) return 'Las claves no coinciden'
-    return ''
+  const ir = (p: Paso) => { setError(''); setPaso(p) }
+  const fallo = (msg: string) => { setError(msg); vibrar([20, 40, 20]) }
+
+  function empezarAlta(m: 'crear' | 'unirse') {
+    setModo(m)
+    setClaveInicial(generarClaveInicial())
+    setGuardada(false)
+    setConfirmacion('')
+    ir(m === 'unirse' && !codigo ? 'invitacion' : 'claveInicial')
   }
 
-  async function enviar(e: React.FormEvent) {
+  async function terminarAlta(e: React.FormEvent) {
     e.preventDefault()
-    const v = validar()
-    if (v) return setError(v)
+    if (clave.length < 8) return fallo('La clave debe tener al menos 8 caracteres')
+    if (clave !== clave2) return fallo('Las claves no coinciden')
+    if (!alias.trim()) return fallo('Elige un apodo para que tu compi te reconozca')
     setOcupado(true)
-    setError('')
     try {
-      if (paso === 'bloqueo') {
-        entrar(await desbloquear(clave))
-      } else {
-        const s = paso === 'crear' ? await crearHogar(clave) : await unirseConInvitacion(codigo, clave)
-        await registrarDispositivo(s)
-        fijarUsuario(s.rol)
-        if (alias.trim()) await guardar('ajustes', { id: `alias-${s.rol}`, valor: alias.trim().slice(0, 20) }, 'Alias definido')
-        if (s.rol === 'A') await asegurarPeriodo()
-        history.replaceState(null, '', location.pathname)
-        entrar(s)
-      }
+      const s = modo === 'crear' ? await crearHogar(clave, claveInicial) : await unirseConInvitacion(codigo, clave, claveInicial)
+      await registrarDispositivo(s)
+      fijarUsuario(s.rol)
+      await guardar('ajustes', { id: `alias-${s.rol}`, valor: alias.trim().slice(0, 20) }, 'Alias definido')
+      if (s.rol === 'A') await asegurarPeriodo()
+      history.replaceState(null, '', location.pathname)
+      vibrar([15, 50, 15])
+      entrar(s)
     } catch (err) {
-      setError((err as Error).message)
+      fallo((err as Error).message)
     } finally {
       setOcupado(false)
-      setClave('')
-      setClave2('')
     }
   }
 
+  async function abrir(e: React.FormEvent) {
+    e.preventDefault()
+    if (!clave) return
+    setOcupado(true)
+    try { entrar(await desbloquear(clave)) } catch (err) { fallo((err as Error).message); setClave('') } finally { setOcupado(false) }
+  }
+
+  async function abrirBio() {
+    setError('')
+    try { entrar(await sesionDesdeRaw(await desbloquearConBiometria())) } catch (err) { fallo((err as Error).message) }
+  }
+
+  async function recuperar(e: React.FormEvent) {
+    e.preventDefault()
+    if (clave.length < 8) return fallo('La nueva clave debe tener al menos 8 caracteres')
+    if (clave !== clave2) return fallo('Las claves no coinciden')
+    setOcupado(true)
+    try {
+      const s = await recuperarConClaveInicial(confirmacion, clave)
+      toast({ tipo: 'ok', texto: 'Clave cambiada. ¡Bienvenido de nuevo!' })
+      entrar(s)
+    } catch (err) { fallo((err as Error).message) } finally { setOcupado(false) }
+  }
+
   if (paso === 'cargando') return null
+  const idxAlta = PASOS_ALTA.indexOf(paso)
 
   return (
     <main className="pt-seguro mx-auto flex min-h-dvh max-w-md flex-col justify-center px-4 pb-8">
@@ -63,45 +154,131 @@ export default function Acceso() {
         className="mb-6 flex flex-col items-center text-center">
         <img src="/icono.svg" alt="" className="mb-3 size-20 drop-shadow-xl" />
         <h1 className="text-3xl font-extrabold">PisoCompartido</h1>
-        <p className="text-sm text-black/55">Gastos, limpieza y parking entre dos</p>
+        <p className="text-sm text-tinta/55">{paso === 'bloqueo' && aliasGuardado ? `Hola de nuevo, ${aliasGuardado} 👋` : 'Gastos, limpieza y parking entre dos'}</p>
       </motion.div>
 
-      {paso === 'bienvenida' ? (
-        <div className="grid gap-3">
-          <button className="boton tarjeta !justify-start text-left" onClick={() => setPaso('crear')}>
-            <Home className="text-marca" /> <span><b>Crear el piso</b><br /><small className="font-normal text-black/50">Soy el primero en instalarla</small></span>
-          </button>
-          <button className="boton tarjeta !justify-start text-left" onClick={() => setPaso('unirse')}>
-            <UserPlus className="text-b" /> <span><b>Unirme con invitación</b><br /><small className="font-normal text-black/50">Escanea el QR del móvil de tu compi</small></span>
-          </button>
+      {idxAlta >= 0 && (
+        <div className="mb-4 flex justify-center gap-2" aria-label={`Paso ${idxAlta + 1} de 3`}>
+          {PASOS_ALTA.map((p, i) => <span key={p} className={`h-2 rounded-full transition-all duration-300 ${i <= idxAlta ? 'w-8 bg-marca' : 'w-2 bg-tinta/15'}`} />)}
         </div>
-      ) : (
-        <form onSubmit={enviar} className="tarjeta grid gap-3">
-          <h2 className="flex items-center gap-2 text-lg font-bold">
-            {paso === 'bloqueo' ? <><Lock size={20} /> Introduce tu clave</> : <><KeyRound size={20} /> Crea tu clave personal</>}
-          </h2>
-          {paso === 'unirse' && (
-            <textarea className="campo min-h-20 py-2 text-xs" placeholder="Pega aquí el código de invitación"
-              value={codigo} onChange={(e) => setCodigo(e.target.value)} required />
-          )}
-          {paso !== 'bloqueo' && (
-            <input className="campo" placeholder="Tu apodo (opcional, sin datos reales)" value={alias} onChange={(e) => setAlias(e.target.value)} maxLength={20} />
-          )}
-          <input className="campo" type="password" inputMode="text" autoComplete={paso === 'bloqueo' ? 'current-password' : 'new-password'}
-            placeholder="Clave personal" value={clave} onChange={(e) => setClave(e.target.value)} autoFocus />
-          {paso !== 'bloqueo' && (
-            <input className="campo" type="password" autoComplete="new-password" placeholder="Repite la clave" value={clave2} onChange={(e) => setClave2(e.target.value)} />
-          )}
-          {error && <p role="alert" className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>}
-          <button className="boton bg-marca text-white disabled:opacity-60" disabled={ocupado}>
-            {ocupado ? 'Comprobando…' : paso === 'bloqueo' ? 'Desbloquear' : 'Empezar'}
-          </button>
-          {paso !== 'bloqueo' && (
-            <p className="flex gap-2 text-xs text-black/50"><ShieldCheck size={16} className="shrink-0" />
-              Tu clave nunca sale de este móvil y tu compi no puede verla. Si la olvidas no hay forma de recuperarla.</p>
-          )}
-        </form>
       )}
+
+      <AnimatePresence mode="popLayout" initial={false}>
+        <motion.div key={paso} className="w-full" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }} transition={{ duration: 0.2 }}>
+          {paso === 'bienvenida' && (
+            <div className="grid gap-3">
+              <button className="tarjeta flex items-center gap-4 text-left transition-transform active:scale-[.98]" onClick={() => empezarAlta('crear')}>
+                <span className="grid size-12 place-items-center rounded-2xl bg-marca text-white"><Home /></span>
+                <span><b>Crear el piso</b><br /><small className="text-tinta/50">Soy el primero en instalarla</small></span>
+              </button>
+              <button className="tarjeta flex items-center gap-4 text-left transition-transform active:scale-[.98]" onClick={() => empezarAlta('unirse')}>
+                <span className="grid size-12 place-items-center rounded-2xl bg-b text-white"><UserPlus /></span>
+                <span><b>Unirme con invitación</b><br /><small className="text-tinta/50">Escanea el QR del móvil de tu compi</small></span>
+              </button>
+            </div>
+          )}
+
+          {paso === 'invitacion' && (
+            <form className="tarjeta grid gap-3" onSubmit={(e) => {
+              e.preventDefault()
+              try { leerInvitacion(codigo); setClaveInicial(generarClaveInicial()); ir('claveInicial') } catch (err) { fallo((err as Error).message) }
+            }}>
+              <h2 className="flex items-center gap-2 text-lg font-bold"><UserPlus size={20} /> Código de invitación</h2>
+              <p className="text-sm text-tinta/60">Tu compi lo genera en <b>Más → Ajustes → Invitar</b>. Si escaneas el QR con la cámara se rellena solo.</p>
+              <textarea className="campo min-h-24 py-2 font-mono text-xs" placeholder="Pega aquí el código" value={codigo} onChange={(e) => setCodigo(e.target.value)} required />
+              {error && <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</p>}
+              <button className="boton min-h-13 bg-marca text-white">Continuar</button>
+              <button type="button" className="text-sm text-tinta/50" onClick={() => ir('bienvenida')}>Volver</button>
+            </form>
+          )}
+
+          {paso === 'claveInicial' && (
+            <div className="tarjeta grid gap-3">
+              <h2 className="flex items-center gap-2 text-lg font-bold"><KeyRound size={20} /> Tu clave inicial</h2>
+              <p className="text-sm text-tinta/60">Apúntala en un lugar seguro (papel o gestor de contraseñas). La necesitarás ahora para crear tu usuario y <b>más adelante si olvidas tu clave</b>. Solo la ves tú.</p>
+              <div className="rounded-2xl border-2 border-dashed border-marca/40 bg-marca-suave p-4 text-center font-mono text-xl font-bold tracking-wider text-marca select-all">{claveInicial}</div>
+              <button type="button" className="boton bg-superficie ring-1 ring-tinta/10" onClick={async () => {
+                try { await navigator.clipboard.writeText(claveInicial); toast({ tipo: 'ok', texto: 'Copiada. Guárdala fuera de esta app.' }) } catch { toast({ tipo: 'error', texto: 'No se pudo copiar; apúntala a mano' }) }
+              }}><Copy size={18} /> Copiar</button>
+              <label className="flex min-h-11 items-center gap-3 text-sm font-semibold">
+                <input type="checkbox" className="size-5 accent-marca" checked={guardada} onChange={(e) => setGuardada(e.target.checked)} /> Ya la he guardado
+              </label>
+              <button className="boton min-h-13 bg-marca text-white disabled:opacity-40" disabled={!guardada} onClick={() => ir('confirmar')}>Continuar</button>
+              <button type="button" className="text-sm text-tinta/50" onClick={() => ir('bienvenida')}>Cancelar</button>
+            </div>
+          )}
+
+          {paso === 'confirmar' && (
+            <form className="tarjeta grid gap-3" onSubmit={(e) => {
+              e.preventDefault()
+              if (normalizarClaveInicial(confirmacion) !== normalizarClaveInicial(claveInicial)) return fallo('No coincide. Revisa la clave que apuntaste.')
+              ir('perfil')
+            }}>
+              <h2 className="flex items-center gap-2 text-lg font-bold"><ShieldCheck size={20} /> Introduce la clave inicial</h2>
+              <p className="text-sm text-tinta/60">Escríbela para confirmar que la tienes bien apuntada.</p>
+              <input className="campo text-center font-mono text-lg tracking-wider uppercase" placeholder="XXXX-XXXX-XXXX-XXXX" value={confirmacion}
+                onChange={(e) => setConfirmacion(e.target.value)} autoCapitalize="characters" autoComplete="off" spellCheck={false} autoFocus />
+              {error && <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</p>}
+              <button className="boton min-h-13 bg-marca text-white">Comprobar</button>
+              <button type="button" className="flex items-center justify-center gap-1 text-sm text-tinta/50" onClick={() => ir('claveInicial')}><ArrowLeft size={14} /> Ver la clave otra vez</button>
+            </form>
+          )}
+
+          {paso === 'perfil' && (
+            <form className="tarjeta grid gap-3" onSubmit={terminarAlta}>
+              <h2 className="flex items-center gap-2 text-lg font-bold"><Lock size={20} /> Crea tu usuario</h2>
+              <input className="campo" name="username" autoComplete="username" placeholder="Tu apodo (sin datos reales)" value={alias} onChange={(e) => setAlias(e.target.value)} maxLength={20} autoFocus />
+              <CampoClave valor={clave} cambiar={setClave} placeholder="Clave definitiva (mín. 8)" nueva medidor />
+              <CampoClave valor={clave2} cambiar={setClave2} placeholder="Repite la clave" nueva />
+              {error && <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</p>}
+              <button className="boton min-h-13 bg-marca text-white disabled:opacity-60" disabled={ocupado}>{ocupado ? 'Cifrando…' : <><Check size={18} /> Crear mi usuario</>}</button>
+              <p className="flex gap-2 text-xs text-tinta/50"><ShieldCheck size={16} className="shrink-0" />
+                Tu clave nunca sale de este móvil y tu compi no puede verla. Tu navegador puede recordarla por ti.</p>
+            </form>
+          )}
+
+          {paso === 'bloqueo' && (
+            <div className="grid gap-3">
+              {conBio && (
+                <button className="tarjeta flex items-center justify-center gap-3 font-bold text-marca transition-transform active:scale-[.98]" onClick={abrirBio}>
+                  <Fingerprint size={26} /> Entrar con Face ID / huella
+                </button>
+              )}
+              <form onSubmit={abrir} className="tarjeta grid gap-3">
+                <h2 className="flex items-center gap-2 text-lg font-bold"><Lock size={20} /> Introduce tu clave</h2>
+                {/* usuario oculto para que el llavero/gestor asocie y recuerde la contraseña */}
+                <input type="text" name="username" autoComplete="username" value={aliasGuardado || 'PisoCompartido'} readOnly hidden />
+                <CampoClave valor={clave} cambiar={setClave} placeholder="Clave personal" autoFocus={!conBio} />
+                {error && <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</p>}
+                <button className="boton min-h-13 bg-marca text-white disabled:opacity-60" disabled={ocupado}>{ocupado ? 'Comprobando…' : 'Desbloquear'}</button>
+                <button type="button" className="flex items-center justify-center gap-1.5 text-sm font-semibold text-marca" onClick={() => { setClave(''); setClave2(''); setConfirmacion(''); ir('recuperar') }}>
+                  <LifeBuoy size={16} /> ¿Olvidaste tu clave?
+                </button>
+              </form>
+            </div>
+          )}
+
+          {paso === 'recuperar' && (
+            <form onSubmit={recuperar} className="tarjeta grid gap-3">
+              <h2 className="flex items-center gap-2 text-lg font-bold"><LifeBuoy size={20} /> Recuperar acceso</h2>
+              <p className="text-sm text-tinta/60">Introduce la <b>clave inicial</b> que apuntaste al crear tu usuario y elige una clave nueva.</p>
+              <input className="campo text-center font-mono text-lg tracking-wider uppercase" placeholder="XXXX-XXXX-XXXX-XXXX" value={confirmacion}
+                onChange={(e) => setConfirmacion(e.target.value)} autoCapitalize="characters" autoComplete="off" spellCheck={false} autoFocus />
+              <input type="text" name="username" autoComplete="username" value={aliasGuardado || 'PisoCompartido'} readOnly hidden />
+              <CampoClave valor={clave} cambiar={setClave} placeholder="Nueva clave (mín. 8)" nueva medidor />
+              <CampoClave valor={clave2} cambiar={setClave2} placeholder="Repite la nueva clave" nueva />
+              {error && <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</p>}
+              <button className="boton min-h-13 bg-marca text-white disabled:opacity-60" disabled={ocupado}>{ocupado ? 'Comprobando…' : 'Cambiar clave y entrar'}</button>
+              <button type="button" className="text-sm text-tinta/50" onClick={() => ir('bloqueo')}>Volver</button>
+              <details className="text-xs text-tinta/50">
+                <summary className="cursor-pointer font-semibold">¿Tampoco tienes la clave inicial?</summary>
+                <p className="mt-2">Nadie puede recuperar los datos cifrados sin ella. Puedes borrar este móvil y volver a unirte con un QR de tu compi; los datos compartidos se descargarán de nuevo.</p>
+                <button type="button" className="mt-2 font-bold text-red-500" onClick={() => confirm('¿Borrar todos los datos de ESTE móvil y empezar de cero?') && borrarTodoLocal()}>Borrar este móvil y empezar de cero</button>
+              </details>
+            </form>
+          )}
+        </motion.div>
+      </AnimatePresence>
     </main>
   )
 }
