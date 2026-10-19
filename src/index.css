@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@theme {
+  --color-marca: #6d5efc;
+  --color-marca-suave: #ece9ff;
+  --color-a: #ff8a3d;
+  --color-b: #18b98d;
+  --color-fondo: #f6f4ff;
+  --color-tinta: #1f1b3a;
+  --font-sans: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+:root { color-scheme: light; }
+html, body, #root { min-height: 100dvh; }
+body {
+  background: var(--color-fondo);
+  color: var(--color-tinta);
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+.tarjeta { @apply rounded-3xl bg-white p-4 shadow-[0_6px_24px_-12px_rgba(60,40,160,.25)]; }
+.boton { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl px-4 font-semibold transition-transform active:scale-[.97]; }
+.campo { @apply min-h-11 w-full rounded-2xl border border-black/10 bg-white px-3 text-base outline-none focus:border-marca; }
+.pb-seguro { padding-bottom: calc(env(safe-area-inset-bottom) + 84px); }
+.pt-seguro { padding-top: calc(env(safe-area-inset-top) + 12px); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

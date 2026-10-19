@@ -1,0 +1,81 @@
+import { describe, it, expect, beforeEach } from 'vitest'
+import { cifrarJSON, descifrarJSON, derivarClave, aleatorio, importarClaveHogar, generarClaveHogar } from '../cripto'
+import { calcularSaldo, conteoParkingMes, turnoSemana } from './calculos'
+import { db, type Pago, type Aparcamiento } from '../db'
+import { guardar, aplicarRemoto, asegurarPeriodo, renovarPeriodo, periodoActivo } from '../db/operaciones'
+import { crearHogar, desbloquear, generarInvitacion, unirseConInvitacion } from '../cripto/sesion'
+
+const pago = (p: Partial<Pago>): Pago => ({
+  id: crypto.randomUUID(), actualizado: 0, periodoId: 'x', tipo: 'luz', concepto: '', importe: 100,
+  fecha: '2026-10-01', pagadoPor: 'A', partePagador: 50, saldado: false, ...p,
+})
+
+describe('cripto', () => {
+  it('cifra y descifra ida y vuelta', async () => {
+    const k = await importarClaveHogar(generarClaveHogar())
+    const txt = await cifrarJSON(k, { hola: 'mundo' })
+    expect(txt).not.toContain('mundo')
+    expect(await descifrarJSON(k, txt)).toEqual({ hola: 'mundo' })
+  })
+  it('rechaza una clave incorrecta', async () => {
+    const salt = aleatorio(16)
+    const buena = await derivarClave('secreto1', salt)
+    const mala = await derivarClave('secreto2', salt)
+    const txt = await cifrarJSON(buena, 1)
+    await expect(descifrarJSON(mala, txt)).rejects.toThrow()
+  })
+})
+
+describe('cálculos', () => {
+  it('saldo a partes iguales y personalizado', () => {
+    expect(calcularSaldo([pago({ importe: 100 })])).toBe(50)
+    expect(calcularSaldo([pago({ importe: 100, pagadoPor: 'B', partePagador: 30 })])).toBe(-70)
+    expect(calcularSaldo([pago({ saldado: true })], 10)).toBe(10)
+  })
+  it('cuenta el parking por mes y usuario', () => {
+    const r = (fecha: string, usuario: 'A' | 'B'): Aparcamiento => ({ id: fecha + usuario, actualizado: 0, periodoId: 'x', fecha, usuario })
+    expect(conteoParkingMes([r('2026-10-01', 'A'), r('2026-10-02', 'B'), r('2026-10-03', 'A'), r('2026-11-01', 'A')], '2026-10')).toEqual({ A: 2, B: 1 })
+  })
+  it('alterna la limpieza semana a semana', () => {
+    const f = new Date('2026-10-19')
+    const sig = new Date('2026-10-26')
+    expect(turnoSemana(f, 0)).not.toBe(turnoSemana(sig, 0))
+    expect(turnoSemana(f, 0)).not.toBe(turnoSemana(f, 1))
+  })
+})
+
+describe('base de datos', () => {
+  beforeEach(async () => {
+    await db.delete()
+    await db.open()
+  })
+  it('renueva el periodo arrastrando saldo', async () => {
+    const p1 = await asegurarPeriodo(new Date('2026-01-01'))
+    expect(p1.fin).toBe('2026-12-31')
+    await renovarPeriodo(25, new Date('2027-01-01'))
+    const act = await periodoActivo()
+    expect(act?.saldoArrastrado).toBe(25)
+    expect((await db.periodos.toArray()).filter((p) => p.activo)).toHaveLength(1)
+    expect(await db.historial.count()).toBe(3)
+  })
+  it('last-write-wins al aplicar eventos remotos', async () => {
+    const id = await guardar('tareas', { titulo: 'local', periodoId: 'x', estado: 'pendiente', asignadoA: 'A' }, 't')
+    await aplicarRemoto('tareas', { id, actualizado: 1, titulo: 'viejo' } as never)
+    expect((await db.tareas.get(id))?.titulo).toBe('local')
+    await aplicarRemoto('tareas', { id, actualizado: Date.now() + 1000, titulo: 'nuevo' } as never)
+    expect((await db.tareas.get(id))?.titulo).toBe('nuevo')
+  })
+  it('emparejamiento y desbloqueo con clave personal', async () => {
+    const a = await crearHogar('claveA123')
+    const inv = await generarInvitacion('claveA123')
+    await expect(desbloquear('mala-clave')).rejects.toThrow('Clave incorrecta')
+    const s = await desbloquear('claveA123')
+    expect(s.hogarId).toBe(a.hogarId)
+    // B se une en "otro dispositivo" (simulado reseteando la BD)
+    await db.delete(); await db.open()
+    const b = await unirseConInvitacion(inv, 'claveB999')
+    expect(b.rol).toBe('B')
+    expect(b.hogarId).toBe(a.hogarId)
+    await expect(desbloquear('claveA123')).rejects.toThrow()
+  })
+}, 60_000)
