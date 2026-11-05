@@ -1,6 +1,11 @@
 # PisoCompartido
 
-PWA privada para 2 compañeros de piso: pagos (renta y servicios), limpieza, tareas comunes y plaza de parking compartida.
+PWA privada para 2 compañeros de piso: pagos (renta y servicios), revisión de la cuenta bancaria común, limpieza, tareas comunes y plaza de parking compartida.
+
+## Módulo de banco
+Sube el extracto semanal en PDF desde la pestaña **Banco**. La app usa el texto del PDF y aplica OCR (Tesseract) solo a las páginas escaneadas, siempre en el dispositivo. Antes de guardar se revisan los movimientos; después, ambos compañeros ven el balance, los movimientos destacados y el PDF original. Las correcciones manuales quedan marcadas y en el histórico.
+
+`predev` y `prebuild` copian los recursos de OCR a `public/ocr` (carpeta no versionada).
 
 ## Uso
 ```bash
@@ -22,4 +27,4 @@ Sin estas variables, cada móvil funciona solo en local.
 - Los datos del piso se cifran con AES-256-GCM. El servidor solo guarda blobs ilegibles.
 - El emparejamiento se hace con un QR que caduca a los 5 minutos. El servidor rechaza un tercer dispositivo.
 - La app se bloquea automáticamente al pasar a segundo plano o tras 2 minutos sin uso, y aplica un retardo progresivo tras 5 fallos.
-- Privacidad: `public/privacidad.html`. Cabeceras CSP: `public/_headers`.
+- Privacidad: `public/privacidad.html`. Cabeceras CSP: `vercel.json` (Vercel) y `public/_headers` (Netlify, Cloudflare Pages).
